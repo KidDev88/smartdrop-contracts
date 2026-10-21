@@ -1448,6 +1448,12 @@ impl FarmingPool {
             return Err(PoolError::ExceedsMaxStake);
         }
 
+        // Reject before any write if the pool-wide deposit total would overflow;
+        // `add_total_deposits` would otherwise trap via `expect`.
+        read_total_deposits(&env)
+            .checked_add(amount)
+            .ok_or(PoolError::ExceedsMaxStake)?;
+
         bump_instance(&env);
 
         let was_staked = is_user_staked(&env, &user);
@@ -1491,6 +1497,7 @@ impl FarmingPool {
         increment_lock_count(&env);
         add_total_staked(&env, amount);
         add_total_locked(&env, amount);
+        add_total_deposits(&env, amount);
 
         let stake_token = get_stake_token(&env)?;
         // Issue #363: Soroban SDK's token::Client::transfer returns () on success
