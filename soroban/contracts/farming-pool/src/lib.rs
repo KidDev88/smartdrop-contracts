@@ -10,14 +10,14 @@ mod types;
 use soroban_sdk::{
     contract, contractimpl, symbol_short, token, Address, BytesN, Env, Executable, Vec,
 };
-pub use types::{PoolError, PoolInfo, UserSummary};
 use types::{
     AdminActionEvent, AdminActionHistoryPage, BankedCreditTotals, BoostConfig, BoostEvent,
-    BoostHistoryPage, CreditRateEvent, CreditRateHistoryPage, DataKey, GlobalMultiplierEvent,
-    GlobalMultiplierHistoryPage, ListWhitelistedResponse, Position, StakeEvent,
-    StakeHistoryPage,
-    UserStake, WhitelistEvent, WhitelistHistoryPage, UserActivity, TierInfo, DistributionEvent, DistributionHistoryPage, PoolAnalytics,
+    BoostHistoryPage, CreditRateEvent, CreditRateHistoryPage, DataKey, DistributionEvent,
+    DistributionHistoryPage, GlobalMultiplierEvent, GlobalMultiplierHistoryPage,
+    ListWhitelistedResponse, PoolAnalytics, Position, StakeEvent, StakeHistoryPage, TierInfo,
+    UserActivity, UserStake, WhitelistEvent, WhitelistHistoryPage,
 };
+pub use types::{PoolError, PoolInfo, UserSummary};
 
 // Expose compiled WASM bytes so sibling crates (e.g. `factory`) can upload the
 // real farming-pool contract in their integration tests via:
@@ -269,7 +269,9 @@ fn add_total_staked(env: &Env, amount: i128) {
         .get::<DataKey, i128>(&DataKey::TotalStaked)
         .unwrap_or(0);
     let new_total = total.checked_add(amount).expect("total stake overflow");
-    env.storage().instance().set(&DataKey::TotalStaked, &new_total);
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalStaked, &new_total);
     update_peak_total_staked(env, new_total);
 }
 
@@ -448,7 +450,11 @@ fn get_user_tier_points(env: &Env, user: &Address) -> i128 {
 
 fn add_user_tier_points(env: &Env, user: &Address, points: i128) {
     let key = DataKey::UserTierPoints(user.clone());
-    let current = env.storage().persistent().get::<DataKey, i128>(&key).unwrap_or(0);
+    let current = env
+        .storage()
+        .persistent()
+        .get::<DataKey, i128>(&key)
+        .unwrap_or(0);
     env.storage().persistent().set(&key, &(current + points));
     bump_user(env, &key);
 }
@@ -459,7 +465,7 @@ fn calculate_user_tier(points: i128, lock_ledgers: u32) -> u32 {
         (p, l) if p >= 10000 && l >= 2000000 => 3, // platinum: 10k+ points, 2M+ ledgers
         (p, l) if p >= 5000 && l >= 1000000 => 2,  // gold: 5k+ points, 1M+ ledgers
         (p, l) if p >= 1000 && l >= 500000 => 1,   // silver: 1k+ points, 500k+ ledgers
-        _ => 0,                                      // bronze: default
+        _ => 0,                                    // bronze: default
     }
 }
 
@@ -493,7 +499,9 @@ fn add_total_distributed_rewards(env: &Env, amount: i128) {
         .unwrap_or(0);
     env.storage().instance().set(
         &DataKey::TotalDistributedRewards,
-        &total.checked_add(amount).expect("reward distribution overflow"),
+        &total
+            .checked_add(amount)
+            .expect("reward distribution overflow"),
     );
 }
 
@@ -825,9 +833,7 @@ fn get_staked_users_list(env: &Env) -> Vec<Address> {
 }
 
 fn set_staked_users_list(env: &Env, users: &Vec<Address>) {
-    env.storage()
-        .instance()
-        .set(&DataKey::StakedUsers, users);
+    env.storage().instance().set(&DataKey::StakedUsers, users);
 }
 
 fn get_locked_users_list(env: &Env) -> Vec<Address> {
@@ -838,9 +844,7 @@ fn get_locked_users_list(env: &Env) -> Vec<Address> {
 }
 
 fn set_locked_users_list(env: &Env, users: &Vec<Address>) {
-    env.storage()
-        .instance()
-        .set(&DataKey::LockedUsers, users);
+    env.storage().instance().set(&DataKey::LockedUsers, users);
 }
 
 // ── History recording helpers ────────────────────────────────────────────────
@@ -1455,7 +1459,7 @@ impl FarmingPool {
         let mut position = if let Some(mut existing) = get_position(&env, &user) {
             checkpoint_position(&env, &user, &mut existing);
             existing.amount += amount;
-            
+
             // Issue #376: Update lock_ledger to current ledger for additional deposits
             // This ensures the lock period is based on the most recent deposit, not the original
             existing.lock_ledger = current;
@@ -1510,7 +1514,11 @@ impl FarmingPool {
         record_stake_event(&env, &user, symbol_short!("lock"), amount);
         record_user_activity(&env, &user);
         increment_user_activity_count(&env, &user);
-        add_user_tier_points(&env, &user, (amount / 1000000) + (read_min_lock_period(&env) as i128 / 100000));
+        add_user_tier_points(
+            &env,
+            &user,
+            (amount / 1000000) + (read_min_lock_period(&env) as i128 / 100000),
+        );
 
         Ok(())
     }
@@ -1901,10 +1909,8 @@ impl FarmingPool {
         env.storage()
             .instance()
             .set(&DataKey::WhitelistEnabled, &true);
-        env.events().publish(
-            (symbol_short!("pool"), symbol_short!("wl_en")),
-            (),
-        );
+        env.events()
+            .publish((symbol_short!("pool"), symbol_short!("wl_en")), ());
         Ok(())
     }
 
@@ -1917,10 +1923,8 @@ impl FarmingPool {
         env.storage()
             .instance()
             .set(&DataKey::WhitelistEnabled, &false);
-        env.events().publish(
-            (symbol_short!("pool"), symbol_short!("wl_dis")),
-            (),
-        );
+        env.events()
+            .publish((symbol_short!("pool"), symbol_short!("wl_dis")), ());
         Ok(())
     }
 
@@ -2469,7 +2473,8 @@ impl FarmingPool {
             for user in locked_users.iter() {
                 if let Some(position) = get_position(&env, &user) {
                     let required_unlock = position.lock_ledger.saturating_add(new_period);
-                    if position.unlock_ledger < required_unlock && current_ledger < required_unlock {
+                    if position.unlock_ledger < required_unlock && current_ledger < required_unlock
+                    {
                         return Err(PoolError::NoActivePosition);
                     }
                 }
@@ -2737,9 +2742,7 @@ impl FarmingPool {
         require_initialized(&env)?;
         bump_instance(&env);
 
-        let staked_amount = get_user_stake(&env, &user)
-            .map(|s| s.amount)
-            .unwrap_or(0);
+        let staked_amount = get_user_stake(&env, &user).map(|s| s.amount).unwrap_or(0);
 
         let (locked_amount, unlock_ledger) = get_position(&env, &user)
             .map(|p| (p.amount, p.unlock_ledger))
@@ -3282,10 +3285,10 @@ impl FarmingPool {
 
         let tier_level = calculate_user_tier(tier_points, position_ledgers);
         let reward_multiplier = match tier_level {
-            3 => 2000,  // platinum: 2.0x
-            2 => 1500,  // gold: 1.5x
-            1 => 1250,  // silver: 1.25x
-            _ => 1000,  // bronze: 1.0x
+            3 => 2000, // platinum: 2.0x
+            2 => 1500, // gold: 1.5x
+            1 => 1250, // silver: 1.25x
+            _ => 1000, // bronze: 1.0x
         };
 
         Ok(TierInfo {
@@ -3360,14 +3363,14 @@ impl FarmingPool {
             add_total_credits(&env, reward_per_user);
             add_total_banked_credits(&env, reward_per_user);
             let key = DataKey::BankedCredits(user.clone());
-            let mut totals: BankedCreditTotals = env
-                .storage()
-                .persistent()
-                .get(&key)
-                .unwrap_or(BankedCreditTotals {
-                    position_credits: 0,
-                    stake_credits: 0,
-                });
+            let mut totals: BankedCreditTotals =
+                env.storage()
+                    .persistent()
+                    .get(&key)
+                    .unwrap_or(BankedCreditTotals {
+                        position_credits: 0,
+                        stake_credits: 0,
+                    });
             totals.stake_credits += reward_per_user;
             set_banked_credits(&env, &user, totals);
         }

@@ -961,10 +961,7 @@ fn test_get_pool_info_aggregates_pool_parameters() {
         info.total_distributed_credits,
         t.client.total_distributed_credits()
     );
-    assert_eq!(
-        info.total_banked_credits,
-        t.client.total_banked_credits()
-    );
+    assert_eq!(info.total_banked_credits, t.client.total_banked_credits());
     assert_eq!(info.is_paused, t.client.is_paused());
 
     // Configured-at-initialize values are reflected.
@@ -2022,7 +2019,12 @@ fn test_unlock_assets_final_outcome_is_invariant_to_how_the_withdrawal_is_split(
                             soroban_sdk::symbol_short!("pool").into_val(&t.env),
                             soroban_sdk::symbol_short!("unlocked").into_val(&t.env)
                         ],
-                        (t.user.clone(), last_part, EXPECTED_TOTAL_CREDITS, EXPECTED_TOTAL_CREDITS)
+                        (
+                            t.user.clone(),
+                            last_part,
+                            EXPECTED_TOTAL_CREDITS,
+                            EXPECTED_TOTAL_CREDITS
+                        )
                             .into_val(&t.env),
                     )
                 ],
@@ -4013,10 +4015,10 @@ fn test_checkpoint_formulas_produce_identical_results() {
 #[test]
 fn test_set_min_lock_period_bounds() {
     let t = setup(2, 1);
-    
+
     assert!(t.client.try_set_min_lock_period(&63_072_000).is_ok());
     assert_eq!(t.client.min_lock_period(), 63_072_000);
-    
+
     assert_eq!(
         t.client.try_set_min_lock_period(&63_072_001),
         Err(Ok(PoolError::InvalidLockPeriod))
@@ -4039,11 +4041,11 @@ fn test_partial_unstake_works_and_leaves_correct_balance() {
     assert_eq!(stake.amount, 600);
     assert_eq!(stake.credits_banked, credits_claimed);
     assert_eq!(t.client.total_staked(), 600);
-    
+
     advance_ledgers(&t.env, 10);
     let final_credits = t.client.unstake(&t.user, &600);
-    assert!(final_credits > credits_claimed); 
-    
+    assert!(final_credits > credits_claimed);
+
     assert!(t.client.get_stake(&t.user).is_none());
     assert_eq!(t.token.balance(&t.user), initial);
 }
@@ -4221,53 +4223,56 @@ fn test_global_multiplier_history_offset_past_end_returns_empty() {
 fn test_checkpoint_uses_current_multiplier_after_change() {
     // Setup pool with multiplier=1
     let t = setup(1, 1);
-    
+
     // User stakes
     t.client.stake(&t.user, &1_000);
     t.client.set_boost(&t.user, &50u32);
-    
+
     // Advance time
     advance_ledgers(&t.env, 10);
-    
+
     // Admin changes multiplier to 2
     t.client.set_global_multiplier(&2u32);
-    
+
     // Advance more time
     advance_ledgers(&t.env, 10);
-    
+
     // Get credits (this internally calls checkpoint)
     let credits = t.client.get_credits(&t.user);
-    
+
     // Expected calculation:
     // - First 10 ledgers: effective_stake = 1000 * (100 - 50 + 50*1) / 100 = 1000, credits = 1000 * 1 * 10 = 10,000
     // - Next 10 ledgers: effective_stake = 1000 * (100 - 50 + 50*2) / 100 = 1500, credits = 1500 * 1 * 10 = 15,000
     // Total: 25,000
     assert_eq!(credits, 25_000);
-    
+
     // Verify the stake record has been updated with new multiplier
     let stake = t.client.get_stake(&t.user).unwrap();
-    assert_eq!(stake.multiplier, 2, "Checkpoint should update to current multiplier");
+    assert_eq!(
+        stake.multiplier, 2,
+        "Checkpoint should update to current multiplier"
+    );
 }
 
 /// Test that get_credits and checkpoint use the same multiplier (issue #358).
 #[test]
 fn test_get_credits_consistent_with_checkpoint_after_multiplier_change() {
     let t = setup(1, 1);
-    
+
     t.client.stake(&t.user, &1_000);
     t.client.set_boost(&t.user, &50u32);
     advance_ledgers(&t.env, 10);
-    
+
     // Change multiplier
     t.client.set_global_multiplier(&3u32);
     advance_ledgers(&t.env, 10);
-    
+
     // Read credits without checkpointing
     let credits_before = t.client.get_credits(&t.user);
-    
+
     // Now trigger a checkpoint via set_boost
     t.client.set_boost(&t.user, &50u32);
-    
+
     // Credits after checkpoint should match what we read before
     let credits_after = t.client.get_credits(&t.user);
     assert_eq!(
@@ -4280,22 +4285,22 @@ fn test_get_credits_consistent_with_checkpoint_after_multiplier_change() {
 #[test]
 fn test_position_checkpoint_uses_current_multiplier() {
     let t = setup_with_lock_period(1, 1, 10);
-    
+
     // User locks assets
     t.client.lock_assets(&t.user, &1_000);
-    
+
     // Advance time
     advance_ledgers(&t.env, 10);
-    
+
     // Admin changes multiplier to 2
     t.client.set_global_multiplier(&2u32);
-    
+
     // Advance more time
     advance_ledgers(&t.env, 10);
-    
+
     // Get position credits
     let credits = t.client.calculate_credits(&t.user);
-    
+
     // Position accrual doesn't use boost, so multiplier shouldn't affect it
     // Expected: 1000 * 1 * 20 = 20,000 (no boost for positions)
     assert_eq!(credits, 20_000);
@@ -4345,7 +4350,10 @@ fn test_withdraw_credits_blocked_when_withdrawals_paused() {
 fn test_migrate_upgrades_schema_version_step_by_step() {
     let t = setup(1, 10);
     t.env.as_contract(&t.contract_id, || {
-        t.env.storage().instance().set(&DataKey::SchemaVersion, &0u32);
+        t.env
+            .storage()
+            .instance()
+            .set(&DataKey::SchemaVersion, &0u32);
     });
     assert_eq!(t.client.schema_version(), 0);
 
