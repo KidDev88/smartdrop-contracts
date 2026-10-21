@@ -285,6 +285,13 @@ fn subtract_total_staked(env: &Env, amount: i128) {
     );
 }
 
+fn read_total_locked(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalLocked)
+        .unwrap_or(0)
+}
+
 fn add_total_locked(env: &Env, amount: i128) {
     let total = env
         .storage()
@@ -1140,6 +1147,11 @@ impl FarmingPool {
         if credit_rate <= 0 || credit_rate > MAX_CREDIT_RATE {
             return Err(PoolError::InvalidCreditRate);
         }
+        // Same ceiling `set_min_lock_period` enforces; without it a pool could be
+        // deployed with a lock period the admin setter would refuse.
+        if min_lock_period > MAX_LOCK_PERIOD {
+            return Err(PoolError::InvalidLockPeriod);
+        }
         let min_stake = if min_stake_amount <= 0 {
             1i128
         } else {
@@ -1448,11 +1460,26 @@ impl FarmingPool {
             return Err(PoolError::ExceedsMaxStake);
         }
 
-        // Reject before any write if the pool-wide deposit total would overflow;
-        // `add_total_deposits` would otherwise trap via `expect`.
-        read_total_deposits(&env)
+        // Same pre-write guards as `stake`: pool-wide totals must not overflow
+        // (`add_total_staked` / `add_total_locked` would trap via `expect`), and
+        // the caller must be funded. Both are decided before any write or
+        // cross-contract call.
+        read_total_staked(&env)
             .checked_add(amount)
             .ok_or(PoolError::ExceedsMaxStake)?;
+        read_total_locked(&env)
+            .checked_add(amount)
+            .ok_or(PoolError::ExceedsMaxStake)?;
+
+        let stake_token = get_stake_token(&env)?;
+        let token_client = token::TokenClient::new(&env, &stake_token);
+        let caller_balance = match token_client.try_balance(&user) {
+            Ok(Ok(balance)) => balance,
+            _ => return Err(PoolError::InvalidStakeToken),
+        };
+        if caller_balance < amount {
+            return Err(PoolError::InsufficientBalance);
+        }
 
         bump_instance(&env);
 
@@ -1499,15 +1526,16 @@ impl FarmingPool {
         add_total_locked(&env, amount);
         add_total_deposits(&env, amount);
 
-        let stake_token = get_stake_token(&env)?;
-        // Issue #363: Soroban SDK's token::Client::transfer returns () on success
-        // and panics on failure, so no explicit validation is needed. The panic
-        // will revert the entire transaction, rolling back the position update above.
-        token::TokenClient::new(&env, &stake_token).transfer(
-            &user,
-            env.current_contract_address(),
-            &amount,
-        );
+        // Verify the pool actually received the full amount, as `stake` does. A
+        // fee-on-transfer or under-delivering token would otherwise leave the
+        // locked position backed by less than its recorded amount. Returning an
+        // error reverts the whole invocation, including the position write above.
+        let pool_before = token_client.balance(&env.current_contract_address());
+        token_client.transfer(&user, env.current_contract_address(), &amount);
+        let pool_after = token_client.balance(&env.current_contract_address());
+        if pool_after.checked_sub(pool_before).unwrap_or(0) < amount {
+            return Err(PoolError::TransferAmountMismatch);
+        }
 
         env.events().publish(
             (symbol_short!("pool"), symbol_short!("locked")),
