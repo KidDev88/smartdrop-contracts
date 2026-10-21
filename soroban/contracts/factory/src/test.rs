@@ -13,6 +13,20 @@ use soroban_sdk::{
 
 use farming_pool::FarmingPoolClient;
 
+/// A test-only contract that answers SEP-41 `symbol` but has no `balance`
+/// entry point. Used to prove `validate_asset` rejects half-implemented token
+/// interfaces rather than treating any `symbol` responder as a stake asset
+/// (#542).
+#[contract]
+pub struct SymbolOnlyToken;
+
+#[contractimpl]
+impl SymbolOnlyToken {
+    pub fn symbol(env: Env) -> soroban_sdk::String {
+        soroban_sdk::String::from_str(&env, "FAKE")
+    }
+}
+
 // The contract crate is `#![no_std]`; these tests assert on `std` collection
 // types, so the shim is declared here (same as farming-pool's tests).
 extern crate std;
@@ -1420,14 +1434,77 @@ fn test_create_pool_rejects_zero_min_lock_period() {
 fn test_create_pool_rejects_factory_address_as_asset() {
     let t = setup();
 
+    let result = t
+        .client
+        .try_create_pool(&t.factory_addr, &1_728_000u128, &2u32, &25u64, &0i128);
+    assert_eq!(result, Err(Ok(FactoryError::InvalidAsset)));
+    assert_eq!(t.client.pool_count(), 0);
+}
+
+#[test]
+fn test_create_pool_rejects_min_stake_amount_below_negative_max() {
+    let t = setup();
+    let asset = test_asset(&t.env);
+
     let result = t.client.try_create_pool(
-        &t.factory_addr,
+        &asset,
         &1_728_000u128,
         &2u32,
         &25u64,
-        &0i128,
+        &(0i128 - MAX_STAKE_AMOUNT - 1),
     );
+    assert_eq!(result, Err(Ok(FactoryError::InvalidMinStakeAmount)));
+    assert_eq!(t.client.pool_count(), 0);
+}
+
+#[test]
+fn test_create_pool_rejects_i128_min_min_stake_amount() {
+    let t = setup();
+    let asset = test_asset(&t.env);
+
+    let result = t
+        .client
+        .try_create_pool(&asset, &1_728_000u128, &2u32, &25u64, &i128::MIN);
+    assert_eq!(result, Err(Ok(FactoryError::InvalidMinStakeAmount)));
+    assert_eq!(t.client.pool_count(), 0);
+}
+
+#[test]
+fn test_create_pool_rejects_asset_equal_to_admin() {
+    let t = setup();
+    let asset = test_asset(&t.env);
+
+    // Point the factory admin at the token contract so `asset == admin`, then
+    // confirm the pool is refused rather than deployed with a token-controlled
+    // admin (#541).
+    t.client.transfer_admin(&asset);
+    t.env.mock_all_auths();
+
+    let result = t
+        .client
+        .try_create_pool(&asset, &1_728_000u128, &2u32, &25u64, &0i128);
     assert_eq!(result, Err(Ok(FactoryError::InvalidAsset)));
+    assert_eq!(t.client.pool_count(), 0);
+}
+
+#[test]
+fn test_create_pool_rejects_asset_without_balance_entry_point() {
+    let t = setup();
+    let asset = t.env.register(SymbolOnlyToken, ());
+
+    let result = t
+        .client
+        .try_create_pool(&asset, &1_728_000u128, &2u32, &25u64, &0i128);
+    assert_eq!(result, Err(Ok(FactoryError::InvalidAsset)));
+    assert_eq!(t.client.pool_count(), 0);
+}
+
+#[test]
+fn test_create_pools_batch_rejects_empty_batch() {
+    let t = setup();
+
+    let result = t.client.try_create_pools_batch(&vec![&t.env]);
+    assert_eq!(result, Err(Ok(FactoryError::EmptyBatch)));
     assert_eq!(t.client.pool_count(), 0);
 }
 
@@ -1583,7 +1660,11 @@ fn test_refresh_pool_ttls_stays_permissionless_for_any_caller() {
     let t = setup_with_pool_records(3);
     let stranger = Address::generate(&t.env);
     // No admin auth provided at all: assert the refresh still succeeds.
-    let sweep = t.client.try_refresh_pool_ttls(&0u32, &3u32).unwrap().unwrap();
+    let sweep = t
+        .client
+        .try_refresh_pool_ttls(&0u32, &3u32)
+        .unwrap()
+        .unwrap();
     assert_eq!(sweep.refreshed.len(), 3);
     assert_eq!(sweep.missing, 0);
     assert_eq!(
@@ -1641,7 +1722,10 @@ fn test_refresh_pool_ttls_reports_only_existing_pools_and_counts_gaps() {
     assert_eq!(sweep.refreshed.len(), 2);
     assert_eq!(sweep.refreshed.get(0), Some(p0));
     assert_eq!(sweep.refreshed.get(1), Some(p2));
-    assert_eq!(sweep.missing, 1, "the gap must be reported, not silently skipped");
+    assert_eq!(
+        sweep.missing, 1,
+        "the gap must be reported, not silently skipped"
+    );
     assert_eq!(sweep.end_id, p2 + 1);
 
     for id in [p0, p2] {
@@ -1937,13 +2021,9 @@ fn test_create_pool_rejects_minimum_stake_above_the_maximum() {
     let t = setup();
     let asset = test_asset(&t.env);
 
-    let result = t.client.try_create_pool(
-        &asset,
-        &1_728_000u128,
-        &2u32,
-        &25u64,
-        &(10i128.pow(18) + 1),
-    );
+    let result =
+        t.client
+            .try_create_pool(&asset, &1_728_000u128, &2u32, &25u64, &(10i128.pow(18) + 1));
 
     assert_eq!(result, Err(Ok(FactoryError::InvalidMinStakeAmount)));
     assert_eq!(t.client.pool_count(), 0);
@@ -2005,9 +2085,15 @@ fn test_create_pool_maintains_the_asset_index() {
     let asset = test_asset(&t.env);
     let other_asset = test_asset(&t.env);
 
-    let first = t.client.create_pool(&asset, &1_728_000u128, &2u32, &10u64, &0i128);
-    let second = t.client.create_pool(&asset, &1_728_000u128, &2u32, &10u64, &0i128);
-    let other = t.client.create_pool(&other_asset, &1_728_000u128, &2u32, &10u64, &0i128);
+    let first = t
+        .client
+        .create_pool(&asset, &1_728_000u128, &2u32, &10u64, &0i128);
+    let second = t
+        .client
+        .create_pool(&asset, &1_728_000u128, &2u32, &10u64, &0i128);
+    let other = t
+        .client
+        .create_pool(&other_asset, &1_728_000u128, &2u32, &10u64, &0i128);
 
     // The index returns only the pools for the requested asset...
     let page = t.client.get_pools_by_asset(&asset, &0u32, &10u32);
@@ -2031,12 +2117,17 @@ fn test_asset_pool_count_agrees_with_the_index() {
 
     assert_eq!(t.client.pool_count_by_asset(&asset), 0);
 
-    t.client.create_pool(&asset, &1_728_000u128, &2u32, &10u64, &0i128);
-    t.client.create_pool(&asset, &1_728_000u128, &2u32, &10u64, &0i128);
+    t.client
+        .create_pool(&asset, &1_728_000u128, &2u32, &10u64, &0i128);
+    t.client
+        .create_pool(&asset, &1_728_000u128, &2u32, &10u64, &0i128);
 
     assert_eq!(t.client.pool_count_by_asset(&asset), 2);
     assert_eq!(
-        t.client.get_pools_by_asset(&asset, &0u32, &10u32).records.len(),
+        t.client
+            .get_pools_by_asset(&asset, &0u32, &10u32)
+            .records
+            .len(),
         2
     );
 }
@@ -2082,7 +2173,8 @@ fn test_asset_index_survives_a_paginated_walk() {
     let t = setup();
     let asset = test_asset(&t.env);
     for _ in 0..3 {
-        t.client.create_pool(&asset, &1_728_000u128, &2u32, &10u64, &0i128);
+        t.client
+            .create_pool(&asset, &1_728_000u128, &2u32, &10u64, &0i128);
     }
     t.client
         .create_pool(&test_asset(&t.env), &1_728_000u128, &2u32, &10u64, &0i128);
