@@ -1524,6 +1524,7 @@ impl FarmingPool {
         increment_lock_count(&env);
         add_total_staked(&env, amount);
         add_total_locked(&env, amount);
+        add_total_deposits(&env, amount);
 
         // Verify the pool actually received the full amount, as `stake` does. A
         // fee-on-transfer or under-delivering token would otherwise leave the

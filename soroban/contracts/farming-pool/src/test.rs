@@ -1770,6 +1770,35 @@ fn test_lock_assets_creates_position() {
 }
 
 #[test]
+fn test_lock_assets_credits_total_deposits() {
+    let t = setup(1, 1);
+    t.client.lock_assets(&t.user, &500);
+    t.client.stake(&t.user, &300i128);
+    assert_eq!(t.client.total_deposits(), 800);
+    assert_eq!(t.client.total_staked(), 800);
+}
+
+#[test]
+fn test_lock_assets_overflowing_total_deposits_returns_typed_error_without_writing_state() {
+    let t = setup(1, 1);
+    t.env.as_contract(&t.contract_id, || {
+        t.env
+            .storage()
+            .instance()
+            .set(&DataKey::TotalDeposits, &(i128::MAX - 50));
+    });
+
+    match t.client.try_lock_assets(&t.user, &100i128) {
+        Err(Ok(PoolError::ExceedsMaxStake)) => {}
+        _ => panic!("expected PoolError::ExceedsMaxStake"),
+    }
+
+    assert!(t.client.get_user_position(&t.user).is_none());
+    assert_eq!(t.client.total_staked(), 0);
+    assert_eq!(t.client.total_deposits(), i128::MAX - 50);
+}
+
+#[test]
 fn test_has_position_returns_false_without_position() {
     let t = setup(1, 1);
     assert!(!t.client.has_position(&t.user));
