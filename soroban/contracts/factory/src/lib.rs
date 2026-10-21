@@ -6,7 +6,9 @@ use soroban_sdk::{
     contract, contractimpl, symbol_short, vec, Address, BytesN, Env, IntoVal, String, Symbol, Val,
     Vec,
 };
-use types::{DataKey, ListPoolsResponse, PoolRecord, PoolSort, PoolStatus, RefreshPoolTtlsResponse};
+use types::{
+    DataKey, ListPoolsResponse, PoolRecord, PoolSort, PoolStatus, RefreshPoolTtlsResponse,
+};
 
 pub use types::FactoryError;
 pub use types::PoolParams;
@@ -82,8 +84,10 @@ fn daily_rate_to_credit_rate(daily_rate: u128) -> Result<i128, FactoryError> {
 /// (issue #325).
 fn publish_pool_gap(env: &Env, pool_id: u32) {
     #[allow(deprecated)]
-    env.events()
-        .publish((symbol_short!("factory"), symbol_short!("pool_gap")), pool_id);
+    env.events().publish(
+        (symbol_short!("factory"), symbol_short!("pool_gap")),
+        pool_id,
+    );
 }
 
 fn bump_instance(env: &Env) {
@@ -239,6 +243,18 @@ fn validate_asset(env: &Env, asset: &Address) -> Result<(), FactoryError> {
         &Symbol::new(env, "symbol"),
         vec![env],
     ) {
+        Ok(Ok(_)) => {}
+        _ => return Err(FactoryError::InvalidAsset),
+    }
+    // Validation 49: Also require the SEP-41 `balance` entry point. A contract
+    // that answers `symbol` but not `balance` cannot support staking, because
+    // `stake`/`lock_assets` read the caller's token balance before transferring
+    // (#542).
+    match env.try_invoke_contract::<i128, soroban_sdk::Error>(
+        asset,
+        &Symbol::new(env, "balance"),
+        (env.current_contract_address(),).into_val(env),
+    ) {
         Ok(Ok(_)) => Ok(()),
         _ => Err(FactoryError::InvalidAsset),
     }
@@ -342,6 +358,14 @@ fn create_pool_inner(
         return Err(FactoryError::InvalidAsset);
     }
 
+    // Validation 48: Ensure the staking asset is not also the pool admin. A
+    // pool administered by its own staking token cannot authorize admin
+    // actions (pause, upgrade, multiplier changes), leaving the pool
+    // unmanageable (#541).
+    if asset == admin {
+        return Err(FactoryError::InvalidAsset);
+    }
+
     // Validation 24: Ensure global_multiplier is strictly within bounds
     // Must be at least 1 and at most MAX_GLOBAL_MULTIPLIER (1000)
     if global_multiplier < 1 {
@@ -386,6 +410,13 @@ fn create_pool_inner(
     if min_stake_amount > MAX_STAKE_AMOUNT {
         return Err(FactoryError::InvalidMinStakeAmount);
     }
+    // Validation 47: Reject an undersized raw min_stake_amount (magnitude
+    // beyond MAX_STAKE_AMOUNT on the negative side) before the non-positive
+    // defaulting logic. A value like `i128::MIN` is corrupt input, not a
+    // request to use the dust default (#540).
+    if min_stake_amount < -MAX_STAKE_AMOUNT {
+        return Err(FactoryError::InvalidMinStakeAmount);
+    }
     let effective_min_stake = if min_stake_amount <= 0 {
         MIN_STAKE_AMOUNT
     } else {
@@ -401,7 +432,9 @@ fn create_pool_inner(
     let next_count = pool_id
         .checked_add(1)
         .ok_or(FactoryError::PoolCountOverflow)?;
-    env.storage().instance().set(&DataKey::PoolCount, &next_count);
+    env.storage()
+        .instance()
+        .set(&DataKey::PoolCount, &next_count);
     let wasm_hash = load_wasm_hash(&env)?;
     let salt = pool_salt(&env, pool_id);
 
@@ -527,7 +560,7 @@ impl Factory {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(FactoryError::AlreadyInitialized);
         }
-        
+
         // Issue #374: Validate admin address before storing
         let zero_admin = Address::from_string(&soroban_sdk::String::from_str(
             &env,
@@ -536,7 +569,7 @@ impl Factory {
         if admin == zero_admin {
             return Err(FactoryError::InvalidAdmin);
         }
-        
+
         if pool_wasm_hash == BytesN::from_array(&env, &[0u8; 32]) {
             return Err(FactoryError::InvalidWasmHash);
         }
@@ -544,10 +577,9 @@ impl Factory {
         env.storage()
             .instance()
             .set(&DataKey::WasmHash, &pool_wasm_hash);
-        env.storage().persistent().set(
-            &DataKey::ApprovedWasmHash(pool_wasm_hash),
-            &true,
-        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::ApprovedWasmHash(pool_wasm_hash), &true);
         // Keep the initial approval alive for as long as the factory is used.
         let approved_hash = load_wasm_hash(&env)?;
         env.storage().persistent().extend_ttl(
@@ -1378,7 +1410,7 @@ impl Factory {
         bump_pool(&env, pool_id);
 
         let no_args: Vec<Val> = vec![&env];
-        
+
         // Query is_paused status
         let is_paused = match env.try_invoke_contract::<bool, soroban_sdk::Error>(
             &record.address,
@@ -1433,10 +1465,9 @@ impl Factory {
         // An admin-approved hash may be used for future deployments and
         // upgrades. The approval is intentionally explicit because a hash
         // alone cannot prove that its uploaded WASM implements FarmingPool.
-        env.storage().persistent().set(
-            &DataKey::ApprovedWasmHash(new_hash.clone()),
-            &true,
-        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::ApprovedWasmHash(new_hash.clone()), &true);
         env.storage().persistent().extend_ttl(
             &DataKey::ApprovedWasmHash(new_hash.clone()),
             TTL_THRESHOLD,
@@ -1562,6 +1593,13 @@ impl Factory {
         let admin = load_admin(&env)?;
         validate_factory_admin(&env, &admin)?;
         admin.require_auth();
+
+        // Validation 50: Reject an empty batch before any work is done. A
+        // zero-length request consumes admin authorization and bumps instance
+        // TTL while creating nothing (#543).
+        if pools.is_empty() {
+            return Err(FactoryError::EmptyBatch);
+        }
 
         let mut pool_ids = vec![&env];
         for params in pools.iter() {
