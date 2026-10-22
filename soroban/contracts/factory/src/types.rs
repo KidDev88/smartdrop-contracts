@@ -192,4 +192,6 @@ pub enum FactoryError {
     /// would consume admin authorization and bump instance TTL while creating
     /// nothing.
     EmptyBatch = 20,
+    /// `create_pools_batch` was called with more entries than `MAX_BATCH_SIZE`.
+    BatchTooLarge = 20,
 }

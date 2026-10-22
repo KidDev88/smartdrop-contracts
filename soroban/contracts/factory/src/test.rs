@@ -893,6 +893,46 @@ fn test_create_pools_batch_rolls_back_when_any_pool_is_invalid() {
 }
 
 #[test]
+fn test_create_pools_batch_rejects_more_than_max_batch_size() {
+    let t = setup();
+    let mut pools = vec![&t.env];
+    for _ in 0..=MAX_BATCH_SIZE {
+        pools.push_back(PoolParams {
+            asset: test_asset(&t.env),
+            daily_rate: 17_280_000,
+            global_multiplier: 2,
+            min_lock_period: 100,
+            min_stake_amount: 1_000_000,
+        });
+    }
+
+    assert_eq!(
+        t.client.try_create_pools_batch(&pools),
+        Err(Ok(FactoryError::BatchTooLarge))
+    );
+    assert_eq!(t.client.pool_count(), 0);
+}
+
+#[test]
+fn test_create_pools_batch_accepts_exactly_max_batch_size() {
+    let t = setup();
+    let mut pools = vec![&t.env];
+    for _ in 0..MAX_BATCH_SIZE {
+        pools.push_back(PoolParams {
+            asset: test_asset(&t.env),
+            daily_rate: 17_280_000,
+            global_multiplier: 2,
+            min_lock_period: 100,
+            min_stake_amount: 1_000_000,
+        });
+    }
+
+    let ids = t.client.create_pools_batch(&pools);
+    assert_eq!(ids.len(), MAX_BATCH_SIZE);
+    assert_eq!(t.client.pool_count(), MAX_BATCH_SIZE);
+}
+
+#[test]
 fn test_get_pool_returns_correct_record() {
     let env = Env::default();
     env.mock_all_auths();

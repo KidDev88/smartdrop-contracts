@@ -1309,6 +1309,29 @@ fn test_initialize_rejects_credit_rate_above_ceiling() {
     assert!(matches!(result, Err(Ok(PoolError::InvalidCreditRate))));
 }
 
+#[test]
+fn test_initialize_rejects_min_lock_period_above_ceiling() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let asset = env.register_stellar_asset_contract_v2(token_admin);
+    let contract_id = env.register(FarmingPool, ());
+    let client = FarmingPoolClient::new(&env, &contract_id);
+
+    // Same ceiling `set_min_lock_period` enforces, so a pool cannot be deployed
+    // with a lock period the admin setter would refuse.
+    let result = client.try_initialize(
+        &admin,
+        &asset.address(),
+        &2u32,
+        &1i128,
+        &(MAX_LOCK_PERIOD + 1),
+        &1i128,
+    );
+    assert_eq!(result, Err(Ok(PoolError::InvalidLockPeriod)));
+}
+
 /// Ties the #89 fix to its own derivation: at both ceilings simultaneously
 /// (`MAX_GLOBAL_MULTIPLIER`, `MAX_CREDIT_RATE`), full boost allocation (100%,
 /// `compute_total_stake`'s worst case), the derivation's `amount_max`, and
@@ -1744,6 +1767,35 @@ fn test_lock_assets_creates_position() {
 }
 
 #[test]
+fn test_lock_assets_credits_total_deposits() {
+    let t = setup(1, 1);
+    t.client.lock_assets(&t.user, &500);
+    t.client.stake(&t.user, &300i128);
+    assert_eq!(t.client.total_deposits(), 800);
+    assert_eq!(t.client.total_staked(), 800);
+}
+
+#[test]
+fn test_lock_assets_overflowing_total_deposits_returns_typed_error_without_writing_state() {
+    let t = setup(1, 1);
+    t.env.as_contract(&t.contract_id, || {
+        t.env
+            .storage()
+            .instance()
+            .set(&DataKey::TotalDeposits, &(i128::MAX - 50));
+    });
+
+    match t.client.try_lock_assets(&t.user, &100i128) {
+        Err(Ok(PoolError::ExceedsMaxStake)) => {}
+        _ => panic!("expected PoolError::ExceedsMaxStake"),
+    }
+
+    assert!(t.client.get_user_position(&t.user).is_none());
+    assert_eq!(t.client.total_staked(), 0);
+    assert_eq!(t.client.total_deposits(), i128::MAX - 50);
+}
+
+#[test]
 fn test_has_position_returns_false_without_position() {
     let t = setup(1, 1);
     assert!(!t.client.has_position(&t.user));
@@ -1817,6 +1869,74 @@ fn test_lock_assets_rejects_insufficient_balance() {
         .client
         .try_lock_assets(&t.user, &2_000_000_000i128)
         .is_err());
+}
+
+#[test]
+fn test_lock_assets_rejects_insufficient_balance_without_writing_state() {
+    let t = setup(1, 1);
+    let balance = t.token.balance(&t.user);
+
+    assert_eq!(
+        t.client.try_lock_assets(&t.user, &(balance + 1)),
+        Err(Ok(PoolError::InsufficientBalance))
+    );
+
+    assert!(t.client.get_user_position(&t.user).is_none());
+    assert_eq!(t.client.total_locked(), 0);
+    assert_eq!(t.client.total_staked(), 0);
+    assert_eq!(t.token.balance(&t.user), balance);
+}
+
+#[test]
+fn test_lock_assets_overflowing_total_staked_returns_typed_error_without_writing_state() {
+    let t = setup(1, 1);
+    t.env.as_contract(&t.contract_id, || {
+        t.env
+            .storage()
+            .instance()
+            .set(&DataKey::TotalStaked, &(i128::MAX - 50));
+    });
+
+    assert_eq!(
+        t.client.try_lock_assets(&t.user, &100i128),
+        Err(Ok(PoolError::ExceedsMaxStake))
+    );
+
+    assert!(t.client.get_user_position(&t.user).is_none());
+    assert_eq!(t.client.total_locked(), 0);
+    assert_eq!(t.client.total_staked(), i128::MAX - 50);
+}
+
+/// `lock_assets` applies the same received-amount check as `stake`: a token that
+/// skims a fee must not leave a locked position backed by less than its amount.
+#[test]
+fn test_lock_assets_rejects_deposit_not_delivered_in_full() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    let token_id = env.register(MockFeeToken, ());
+    let token = MockFeeTokenClient::new(&env, &token_id);
+    token.mint(&user, &1_000_000i128);
+    token.set_fee_bps(&100); // 1% skimmed per transfer
+
+    let farming_pool_id = env.register(FarmingPool, ());
+    let client = FarmingPoolClient::new(&env, &farming_pool_id);
+    client.initialize(&admin, &token_id, &2u32, &100i128, &0u32, &0i128);
+
+    assert_eq!(
+        client.try_lock_assets(&user, &1_000i128),
+        Err(Ok(PoolError::TransferAmountMismatch))
+    );
+
+    // The whole invocation reverted: position, totals and tokens are untouched.
+    assert!(client.get_user_position(&user).is_none());
+    assert_eq!(client.total_locked(), 0);
+    assert_eq!(client.total_staked(), 0);
+    assert_eq!(token.balance(&user), 1_000_000);
+    assert_eq!(token.balance(&farming_pool_id), 0);
 }
 
 #[test]

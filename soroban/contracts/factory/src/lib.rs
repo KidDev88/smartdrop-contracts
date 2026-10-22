@@ -46,6 +46,11 @@ const MAX_CREDIT_RATE: i128 = 100_000_000;
 // `create_pool`'s public unit is bounded directly rather than only after
 // ledger conversion (#524-#527).
 const MAX_DAILY_RATE: u128 = MAX_CREDIT_RATE as u128 * LEDGERS_PER_DAY;
+// Maximum number of pools that `create_pools_batch` will create in a single
+// call. Each entry deploys a full farming-pool WASM instance, so an unbounded
+// batch is a resource-exhaustion vector against the deploying transaction
+// (#528-#531).
+const MAX_BATCH_SIZE: u32 = 10;
 
 /// Convert a "credits per day" figure into the deployed pool's native
 /// "credits per ledger" `credit_rate`.
@@ -1599,6 +1604,12 @@ impl Factory {
         // TTL while creating nothing (#543).
         if pools.is_empty() {
             return Err(FactoryError::EmptyBatch);
+        // Validation 35: Cap the batch size before any pool is deployed. Each
+        // entry triggers a WASM deploy inside `create_pool_inner`, so an
+        // unbounded batch can exhaust the transaction's resource budget and
+        // trap with an opaque host error rather than a typed failure (#528-#531).
+        if pools.len() > MAX_BATCH_SIZE {
+            return Err(FactoryError::BatchTooLarge);
         }
 
         let mut pool_ids = vec![&env];
